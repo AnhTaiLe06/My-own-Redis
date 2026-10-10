@@ -110,68 +110,104 @@ static Conn *handle_accept(int fd)
     return con;
 }
 
-static int32_t read_full(int fd, char *buf, size_t n)
+// process 1 request if there is enough data
+static bool try_one_request(Conn *conn)
 {
-    while(n > 0)
-    {
-        ssize_t rv = read(fd, buf, n);
-        if(rv <= 0)
-        {
-            return -1;
-        }
-        assert((size_t)rv <= n);
-        n -= (size_t)rv;
-        buf += rv;
-    }
-    return 0;
-}
-
-static int32_t write_all(int fd, char *buf, size_t n)
-{
-    while(n > 0)
-    {
-        ssize_t rv = write(fd, buf, n);
-        if(rv <= 0)
-        {
-            return -1;
-        }
-        assert((size_t)rv <= n);
-        n -= (size_t)rv;
-        buf += rv;
-    }
-    return 0;
-}
-
-static int32_t oneRequest(int connfd)
-{
-    char rbuf[4 + k_max_msg];
-    errno = 0;
-    int32_t err = read_full(connfd, rbuf, 4);
-    if(err)
-    {
-        msg(errno==0 ? "EOF" : "read() error");
-        return -1;
-    }
+    // message header
+    if(conn->incoming.size() < 4) return false; // want read
     uint32_t len = 0;
-    memcpy(&len, rbuf, 4);
+    memcpy(&len, conn->incoming.data(), 4);
+
     if(len > k_max_msg)
     {
-        msg("too long");
-        return -1;
+        msg("message too long");
+        conn->want_close = true;
+        return false; // want close
     }
-    err = read_full(connfd, &rbuf[4], len);
-    if(err)
+
+    // message body
+    if(len + 4 > conn->incoming.size()) return false; //want read
+
+    const uint8_t *request = &conn->incoming[4];
+
+    // enough data for one request, do something with it
+    printf("clients says: len:%d data:%.*s\n",
+        len, len < 100 ? len : 100, request);
+    
+    // generate the response
+    buf_append(conn->outgoing, (const uint8_t *)& len, 4);
+    buf_append(conn->outgoing, request, len);
+
+    // application logic is done! remove the request message.
+    buf_consume(conn->incoming, len + 4);
+
+    return true; // success
+}
+
+// application callback when the socket writeable
+static void handle_write(Conn *conn)
+{
+    assert(conn->outgoing.size() > 0);
+    ssize_t rv = write(conn->fd, &conn->outgoing[0], conn->outgoing.size());
+
+    if(rv < 0 && errno == EAGAIN) return; // actually not ready
+    if(rv < 0)
     {
-        msg("read() error");
-        return err;
+        msg_errno("write() error");
+        conn->want_close = true; //error handling
+        return;
     }
-    printf("client says: %.*s\n", len, &rbuf[4]);
-    const char reply[] = "world";
-    char wbuf[4 + sizeof(reply)];
-    len = (uint32_t)strlen(reply);
-    memcpy(wbuf, &len, 4);
-    memcpy(&wbuf[4], reply, len);
-    return write_all(connfd, wbuf, len + 4);
+
+    // remove written data from `outgoing`
+    buf_consume(conn->outgoing, (size_t)rv);
+
+    // update the readiness intention
+    if(conn->outgoing.size() == 0) // all data written
+    {
+        conn->want_read = true;
+        conn->want_write = false;
+    } // else: want write
+}
+
+// application callback when the socket readable
+static void handle_read(Conn *conn)
+{
+    // read some data
+    uint8_t buf[64 * 1024];
+    ssize_t rv = read(conn->fd, buf, sizeof(buf));
+    if(rv < 0 && errno == EAGAIN) return; // not ready to read
+    //error
+    if(rv < 0)
+    {
+        msg_errno("read() error");
+        conn->want_close = true;
+        return; // want close
+    }
+    // handle EOF
+    if(rv == 0)
+    {
+        if(conn->incoming.size() == 0) msg("client closed");
+        else msg("unexpected EOF");
+        conn->want_close = true;
+        return; //want close
+    }
+
+    // got some new data
+    buf_append(conn->incoming, buf, (size_t)rv);
+
+    // parse requests and generate respones 
+    while(try_one_request(conn)) {}
+
+    // update the readiness intention
+    if(conn->outgoing.size() > 0) // has a respone
+    {
+        conn->want_read = false;
+        conn->want_write = true;
+        // The socket is likely ready to write in a request-response protocol,
+        // try to write it without waiting for the next iteration
+        return handle_write(conn);
+    }
+    // else: want read
 }
 
 int main()
@@ -248,6 +284,7 @@ int main()
             die("poll");
         }
 
+        // handle listenning socket
         if(poll_args[0].revents)
         {
             if(Conn *conn = handle_accept(fd))
@@ -258,6 +295,34 @@ int main()
                 fd2conn[conn->fd] = conn;
             }
         }
-    }
+
+        // handle connection socket
+        for(size_t i = 1; i < poll_args.size(); i++)
+        {
+            uint32_t ready = poll_args[i].revents;
+            if(ready == 0) continue;
+            
+            Conn *conn = fd2conn[poll_args[i].fd];
+            if(ready & POLLIN)
+            {
+                assert(conn->want_read);
+                handle_read(conn);
+            }
+            if(ready & POLLOUT)
+            {
+                assert(conn->want_write);
+                handle_write(conn);
+            }
+
+            // close socket from error or application logic
+            if((ready & POLLERR) || conn->want_close)
+            {
+                (void)close(conn->fd);
+                fd2conn[conn->fd] = NULL;
+                delete conn;
+            }
+        } // for each connection sockets
+    } // event loop
+    
     return 0;
 }
