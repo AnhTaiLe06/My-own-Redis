@@ -297,7 +297,7 @@ int main()
         }
 
         // handle connection socket
-        for(size_t i = 1; i < poll_args.size(); i++)
+        for(size_t i = 1; i < poll_args.size(); i++) // skip the first because the first one is not client address
         {
             uint32_t ready = poll_args[i].revents;
             if(ready == 0) continue;
