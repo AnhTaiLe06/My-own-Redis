@@ -183,7 +183,7 @@ static void do_request(std::vector <std::string> &cmd, Response &out)
         out.data.assign(val.begin(), val.end());
     }
     else if(cmd.size() == 3 && cmd[0] == "set") g_data[cmd[1]].swap(cmd[2]);
-    else if(cmd.size() == 3 && cmd[0] == "del")g_data.erase(cmd[1]);
+    else if(cmd.size() == 2 && cmd[0] == "del") g_data.erase(cmd[1]);
     else out.status = RES_ERR; // invalid command
 }
 
