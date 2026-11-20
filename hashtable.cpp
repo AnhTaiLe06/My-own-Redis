@@ -61,7 +61,7 @@ const size_t k_max_rehashing_work = 128; // the maximum number of keys we migrat
 static void hm_help_rehashing(HMap *hmap)
 {
     size_t cnt = 0;
-    while(cnt < k_max_load_factor && hmap->older.size > 0)
+    while(cnt < k_max_rehashing_work && hmap->older.size > 0)
     {
         HNode **from = &hmap->older.table[hmap->migrate_pos];
         if(!*from)

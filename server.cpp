@@ -16,6 +16,11 @@
 #include <vector>
 #include <string>
 #include <map>
+// Hashtable
+#include "hashtable.h"
+
+#define container_of(ptr, T, member) \
+    ((T *)( (char *)ptr - offsetof(T, member) ))
 
 static void msg(const char *msg)
 {
@@ -166,25 +171,103 @@ static int32_t parse_req(const uint8_t *data, size_t size, std::vector <std::str
     return 0;
 }
 
-static std::map <std::string, std::string> g_data;
+static struct 
+{
+    HMap db;
+}g_data;
+
+struct Entry
+{
+    struct HNode node; // hashtable node
+    std::string key;
+    std::string val;
+};
+
+// equality comparison for `struct Entry`
+static bool entry_eq(HNode *node1, HNode *node2)
+{
+    Entry *en1 = container_of(node1, Entry, node);
+    Entry *en2 = container_of(node2, Entry, node);
+    return en1->key == en2->key;
+}
+
+// FNV hash
+static uint64_t str_hash(const uint8_t *data, size_t len)
+{
+    uint32_t h = 0x811C9DC5;
+    for(size_t i = 0; i < len; i++) 
+    {
+        h = (h + data[i]) * 0x01000193;
+    }
+    return h;
+}
+
+static void do_get(std::vector <std::string> &cmd, Response &out)
+{
+    // a dummy `Entry` just for the lookup
+    Entry key;
+    key.key.swap(cmd[1]);
+    key.node.hcode = str_hash((uint8_t *)key.key.data(), key.key.size());
+    // hashtable lookup
+    HNode *node = hm_lookup(&g_data.db, &key.node, &entry_eq);
+    if(!node)
+    {
+        out.status = RES_NX; // not found the argument
+        return;
+    }
+    const std::string &val = container_of(node, Entry, node)->val;
+    assert(val.size() <= k_max_msg);
+    out.data.assign(val.begin(), val.end());
+}
+
+static void do_set(std::vector <std::string> &cmd)
+{
+    // a dummy `Entry` just for the lookup
+    Entry key;
+    key.key.swap(cmd[1]);
+    key.node.hcode = str_hash((uint8_t *)key.key.data(), key.key.size());
+    // hashtable lookup
+    HNode *node = hm_lookup(&g_data.db, &key.node, &entry_eq);
+    if(node)
+    {
+        // found and update the value
+        container_of(node, Entry, node)->val.swap(cmd[2]);
+    }
+    else
+    {
+        Entry *ent = new Entry();
+        ent->key.swap(key.key);
+        ent->val.swap(cmd[2]);
+        ent->node.hcode = key.node.hcode;
+        hm_insert(&g_data.db, &ent->node);
+    }
+}
+
+static void do_del(std::vector <std::string> &cmd)
+{
+    // a dummy `Entry` just for the lookup
+    Entry key;
+    key.key.swap(cmd[1]);
+    key.node.hcode = str_hash((uint8_t *)key.key.data(), key.key.size());
+    // hashtable lookup
+    HNode *node = hm_delete(&g_data.db, &key.node, &entry_eq);
+    if(node)
+    {
+        delete container_of(node, Entry, node);
+    }
+}
 
 // process commands for get, set, or del
 static void do_request(std::vector <std::string> &cmd, Response &out)
 {
-    if(cmd.size() == 2 && cmd[0] == "get")
-    {
-        auto it = g_data.find(cmd[1]);
-        if(it == g_data.end())
-        {
-            out.status = RES_NX; // not found the argument
-            return;
-        }
-        const std::string &val = it->second;
-        out.data.assign(val.begin(), val.end());
-    }
-    else if(cmd.size() == 3 && cmd[0] == "set") g_data[cmd[1]].swap(cmd[2]);
-    else if(cmd.size() == 2 && cmd[0] == "del") g_data.erase(cmd[1]);
-    else out.status = RES_ERR; // invalid command
+    if(cmd.size() == 2 && cmd[0] == "get") 
+        return do_get(cmd, out);
+    if(cmd.size() == 3 && cmd[0] == "set") 
+        return do_set(cmd);
+    if(cmd.size() == 2 && cmd[0] == "del")
+        return do_del(cmd);
+    
+    out.status = RES_ERR; // invalid command
 }
 
 static void make_response(const Response &resp, std::vector <uint8_t> &out)
