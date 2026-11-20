@@ -7,11 +7,11 @@ all: $(SRC)
 strace:
 	strace ./server >/dev/null
 
-server: server.cpp
-	$(CC) $(CFLAGS) $< -o $@
+server: server.cpp hashtable.cpp
+	$(CC) $(CFLAGS) $^ -o $@
 
 client: client.cpp
-	$(CC) $(CFLAGS) $< -o $@
+	$(CC) $(CFLAGS) $^ -o $@
 
 clean:
 	rm -f $(SRC)
