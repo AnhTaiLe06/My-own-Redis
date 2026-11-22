@@ -22,7 +22,7 @@
 #define container_of(ptr, T, member) \
     ((T *)( (char *)ptr - offsetof(T, member) ))
 
-typedef Buffer Buffer;
+typedef std::vector <uint8_t> Buffer;
 
 static void msg(const char *msg)
 {
@@ -270,7 +270,7 @@ static void do_get(std::vector <std::string> &cmd, Buffer &out)
     }
     const std::string &val = container_of(node, Entry, node)->val;
     assert(val.size() <= k_max_msg);
-    out.data.assign(val.begin(), val.end());
+    return out_str(out, val.data(), val.size());
 }
 
 static void do_set(std::vector <std::string> &cmd, Buffer &out)
