@@ -88,6 +88,121 @@ static int32_t send_req(int fd, const std::vector <std::string> &cmd)
     return write_all(fd, wbuf, len + 4);
 }
 
+// Supported Data types
+enum {
+    TAG_NIL = 0, // nil
+    TAG_ERR = 1, // error code + msg
+    TAG_STR = 2, // string
+    TAG_INT = 3, // int64
+    TAG_DBL = 4, // double
+    TAG_ARR = 5, // array
+};
+
+static int32_t print_res(const uint8_t *buf, uint32_t len)
+{
+    if(len < 1)
+    {
+        msg("length of buffer can't be less than 1");
+        return -1;
+    }
+    if(buf[0] == TAG_NIL)
+    {
+        printf("(nil)\n");
+        return 1;
+    }
+    if(buf[0] == TAG_ERR)
+    {
+        if(len < 1 + 8)
+        {
+            msg("length of buffer need to be at least 1 + 8");
+            return -1;
+        }
+        uint32_t code = 0, size = 0;
+        memcpy(&code, &buf[1], 4);
+        memcpy(&size, &buf[5], 4);
+        if(len < 1 + 8 + size)
+        {
+            msg("can't find the error message");
+            return -1;
+        }
+        printf("(err) %d %.*s\n", code, len, &buf[9]);
+        return 1 + 8 + size;
+    }
+    if(buf[0] == TAG_STR)
+    {
+        if(len < 1 + 4)
+        {
+            msg("can't find the size of the string in TAG_STR");
+            return -1;
+        }
+        uint32_t size = 0;
+        memcpy(&size, &buf[1], 4);
+        if(len < 1 + 4 + size)
+        {
+            msg("something wrong with the string");
+            return -1;
+        }
+        printf("(str) %.*s\n", size, &buf[5]);
+        return 1 + 4 + size;
+    }
+    if(buf[0] == TAG_INT)
+    {
+        if(len < 1 + 8)
+        {
+            msg("can't find the integer");
+            return -1;
+        }
+        int64_t val = 0;
+        memcpy(&val, &buf[1], 8);
+        printf("(int) %ld\n", val);
+        return 1 + 8;
+    }
+    if(buf[0] == TAG_DBL)
+    {
+        if(len < 1 + 8)
+        {
+            msg("can't find the double");
+            return -1;
+        }
+        double val = 0;
+        memcpy(&val, &buf[1], 8);
+        printf("(double) %g\n", val);
+        return 1 + 8;
+    }
+    if(buf[0] == TAG_ARR)
+    {
+        if(len < 1 + 4)
+        {
+            msg("can't find the size of the array");
+            return -1;
+        }
+        uint32_t size = 0;
+        memcpy(&size, &buf[1], 4);
+        printf("(arr) len=%u\n", size);
+        size_t pos = 1 + 4;
+        for(uint32_t i = 0; i < size; i++)
+        {
+            int32_t rv = print_res(&buf[pos], len - pos);
+            if(rv < 0)
+            {
+                return rv;
+            }
+
+            pos += (size_t)rv;
+            if(pos > len)
+            {
+                msg("position can't be greater than length");
+                return -1;
+            }
+        }
+        printf("(arr) end\n");
+        return (int32_t)pos;
+    }
+
+    msg("something went wrong");
+    return -1;
+}
+
 static int32_t read_res(int fd)
 {
     // 4 bytes header 
@@ -110,29 +225,24 @@ static int32_t read_res(int fd)
         return -1;
     }
 
-    // 4 bytes for status
-    rbuf.resize(8);
-    err = read_full(fd, &rbuf[4], 4);
-    if(err)
-    {
-        msg("read() error");
-        return err;
-    }
-    uint32_t status = 0;
-    memcpy(&status, &rbuf[4], 4); // assume little endian
-
     // reply body
     rbuf.resize(len + 4);
-    err = read_full(fd, &rbuf[8], len - 4);
+    err = read_full(fd, &rbuf[4], len);
     if(err)
     {
         msg("read() error");
         return err;
     }
 
-    // do something
-    printf("len:%u\n status:%u\n  data:%.*s\n", len, status, len < 100 ? len : 100, &rbuf[8]);
-    return 0;
+    // print the result out
+    uint32_t rv = print_res((uint8_t *)&rbuf[4], len);
+    if(rv > 0 && (uint32_t)rv != len)
+    {
+        msg("something went wrong");
+        rv = -1;
+    }
+
+    return rv;
 }
 
 int main(int argc, char **argv)
